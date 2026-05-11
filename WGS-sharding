@@ -1,0 +1,77 @@
+SRC_DIR=/mnt/genome-fs/amppd_2023_v4_subset_wgs
+DEST_DIR=
+CHRS=()
+
+usage() {
+  echo "Usage: $0 [--src-dir DIR] [--skip-until N] --dest-dir DIR <chr_number> [chr_number ...]"
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --src-dir)  SRC_DIR=$2; shift 2 ;;
+    --dest-dir) DEST_DIR=$2; shift 2 ;;
+    --skip-until) SKIP_UNTIL=$2; shift 2 ;;
+    --*)        echo "Unknown option: $1" >&2; usage ;;
+    *)          CHRS+=("$1"); shift ;;
+  esac
+done
+
+[[ -z "$DEST_DIR" ]] && { echo "ERROR: --dest-dir is required" >&2; usage; }
+[[ ${#CHRS[@]} -eq 0 ]] && { echo "ERROR: at least one chr number required" >&2; usage; }
+
+for CHR in "${CHRS[@]}"; do
+  chr="${SRC_DIR}/BF_HB_LC_PD_PP_SU_SY_chr${CHR}.vcf.gz"
+
+  if [[ ! -f "$chr" ]]; then
+    echo "ERROR: VCF not found: $chr" >&2
+    continue
+  fi
+
+  fname=$(basename "$chr" .vcf.gz)
+  shard_dest="${DEST_DIR}/${fname}"
+  mkdir -p "$shard_dest"
+
+  zcat "$chr" | awk '/^#/ {print;next} NF == 0 {next} {exit}' > "/tmp/${fname}_header.txt"
+
+  echo "$(date) Starting split for chr${CHR}"
+  t0=$(date +%s)
+
+  total_size=$(stat -c%s "$chr")
+  export total_size
+
+  bgzip -d -c -@4 "$chr" | split -a 5 -d -u -l 20000 --filter "
+    if [ -n \"$SKIP_UNTIL\" ] ; then
+        cur=\${FILE##*_}
+                cur=\$(( 10#\$cur ))
+        if [ \$(( \$cur < $SKIP_UNTIL )) -eq 1 ]; then
+                        echo \$(date) \$FILE skipping
+                cat > /dev/null
+                        echo \$(date) \$FILE skipping done
+        fi
+    else
+        if [[ \$FILE == *_00000 ]]; then
+            bgzip -c -@4 - > ${shard_dest}/\${FILE}.vcf.gz
+        else
+            cat /tmp/${fname}_header.txt - | bgzip -c -@4 - > ${shard_dest}/\${FILE}.vcf.gz
+        fi
+
+                shard_num=\$(echo \$FILE | grep -oE '[0-9]+\$')
+                shard_idx=\$(( 10#\$shard_num + 1 ))
+                shard_count=\$(ls ${shard_dest}/*.vcf.gz 2>/dev/null | wc -l)
+
+                if [[ \$shard_count -ge 3 ]]; then
+                  avg=\$(ls -l ${shard_dest}/*.vcf.gz | head -n 3 | awk '{s+=\$5; n++} END{print int(s/n)}')
+                  est_total=\$(( total_size / avg ))
+                  remaining=\$(( est_total - shard_idx ))
+                  echo \$(date) \$FILE done — shard \${shard_idx}/~\${est_total}, ~\${remaining} remaining
+                else
+                  echo \$(date) \$FILE done — shard \${shard_idx} \(estimating...\)
+                fi
+                ls -lh ${shard_dest}/\${FILE}.vcf.gz
+    fi
+        " - "${fname}_"
+
+  elapsed=$(( $(date +%s) - t0 ))
+  echo "$(date) chr${CHR} done — elapsed: ${elapsed}s"
+done
