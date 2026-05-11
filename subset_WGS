@@ -1,0 +1,20 @@
+src=/mnt/amp-pd/genome_seq/2023_v4
+dest=/mnt/subset_tmp
+final_dest=/mnt/genome-fs/amppd_2023_v4_subset_wgs
+samples=$final_dest/BF_HB_LC_PD_PP_SU_SY.txt
+prefix=BF_HB_LC_PD_PP_SU_SY
+echo "$(date) ============== starting new run (input = $@) =============="
+
+for chr in $*; do
+        file=$src/chr${chr}.vcf.gz
+        echo "$(date) Processing $file => $dest"
+        bcftools view -S $samples --threads 12 -Oz -o $dest/${prefix}_chr${chr}.vcf.gz $file
+        echo -e "\t1. $(date) Done processing $file => $dest/${prefix}_chr${chr}.vcf.gz"
+        tabix -p vcf $dest/${prefix}_chr${chr}.vcf.gz
+        echo -e "\t2. $(date) Indexing $dest/${prefix}_chr${chr}.vcf.gz done"
+        echo -e "\t3. $(date) moving to $final_dest"
+        mv $dest/${prefix}_chr${chr}.vcf.* $final_dest
+        echo "-------  $(date) $file DONE ---------------"
+done
+
+echo "$(date) ============== run complete (input = $@) =============="
